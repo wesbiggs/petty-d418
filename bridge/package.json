@@ -1,0 +1,10 @@
+{
+  "name": "petty-d418-bridge",
+  "version": "0.1.0",
+  "description": "Host-side bridge for PETTY-D418: speech on the C64 through the SID volume register",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/bridge.js"
+  }
+}
