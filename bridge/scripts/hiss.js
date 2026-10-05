@@ -15,10 +15,11 @@ import { STREAM_CODEC, decodeLevels, encode, makeCodec } from '../src/codec.js';
 import { aWeight, fft } from '../src/metrics.js';
 import { loadAudio, prepare, say, speakWith } from '../src/speech.js';
 import { timerFor } from '../src/protocol.js';
+import { lpcWeights } from '../src/noise.js';
 
 const { values: opt } = parseArgs({ options: {
   file: { type: 'string' }, say: { type: 'string' }, tts: { type: 'string' },
-  rate: { type: 'string', default: '8000' }, seconds: { type: 'string', default: '12' },
+  rate: { type: 'string', default: '8000' }, seconds: { type: 'string', default: '12' }, beam: { type: 'string', default: '0.02' },
 } });
 const expand = p => p.replace(/^~/, homedir());
 const audio = opt.file ? loadAudio(expand(opt.file)) : opt.tts ? speakWith(opt.tts, opt.say ?? 'Hello.') : say(opt.say ?? 'Hello.');
@@ -47,7 +48,31 @@ function aWeightedDb(x) {
   return db(Math.sqrt(2 * p) / x.length);
 }
 
-function analyze(label, target, out) {
+// How much of the noise is not masked by the signal: in each 20 ms frame and each 500 Hz band to 4 kHz, the
+// noise is "unmasked" when it is within 10 dB of the signal in that band (or louder). Returns the share of
+// such cells, and how far over that line they are on average (dB).
+function unmasked(target, err) {
+  const N = 256, hop = 160, hann = Float64Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * (i + 0.5) / N));
+  const bandPower = (x, s) => {
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let i = 0; i < N; i++) re[i] = x[s + i] * hann[i];
+    fft(re, im);
+    return Array.from({ length: 8 }, (_, b) => { let p = 0; for (let k = Math.ceil(b * 500 * N / rate); k < Math.ceil((b + 1) * 500 * N / rate); k++) p += re[k] ** 2 + im[k] ** 2; return p / N; });
+  };
+  let cells = 0, bad = 0, over = 0;
+  for (let s = 0; s + N <= target.length; s += hop) {
+    const sp = bandPower(target, s), np = bandPower(err, s);
+    for (let b = 0; b < 8; b++) {
+      if (sp[b] < 1e-9) continue; // nothing there to mask or to hear
+      cells++;
+      const excess = 10 * Math.log10(np[b] / sp[b]) + 10;
+      if (excess > 0) { bad++; over += excess; }
+    }
+  }
+  return { share: bad / cells, mean: bad ? over / bad : 0 };
+}
+
+function analyze(label, target, out, seconds = null) {
   const err = Float32Array.from(target, (v, i) => out[i] - v);
   const frame = Math.round(rate * 0.02), frames = [];
   for (let s = 0; s + frame <= target.length; s += frame) {
@@ -58,7 +83,7 @@ function analyze(label, target, out) {
   const quiet = group(0, q), loud = group(3 * q, sorted.length);
   const idle = frames.filter(f => db(f.sig) < -50);
   return {
-    label, noise: db(rms(err)), aNoise: aWeightedDb(err),
+    label, noise: db(rms(err)), aNoise: aWeightedDb(err), unmasked: unmasked(target, err), seconds,
     quietSig: quiet.sig, quietNoise: quiet.noise, loudSig: loud.sig, loudNoise: loud.noise,
     idleFrames: idle.length / frames.length, idleOut: idle.length ? db(rms(idle.map(f => f.out))) : null,
     bands: [[0, 500], [500, 1000], [1000, 2000], [2000, 3000], [3000, 4000]].map(([a, b]) => bandDb(err, a, b)),
@@ -72,20 +97,25 @@ const codec = makeCodec(STREAM_CODEC);
 const { target: full } = prepare(audio, rate, { lut: 'sid6581', compress: 0.3 });
 const target = full.subarray(0, maxSamples);
 rows.push(analyze('4-bit PCM, plain rounding', target, reconstruct(quantize4(target, { lut, shape: 'none' }), lut)));
-for (const [label, weight] of [
-  ['2-bit code, plain error', []],
-  ['  weight [-0.3]', [-0.3]],
-  ['  weight [-0.6]', [-0.6]],
-  ['  weight [-0.8]', [-0.8]],
-  ['  weight [-0.95]', [-0.95]],
-  ['  weight [-1.0, 0.3]', [-1.0, 0.3]],
-  ['  weight [0.6] (noise up: worse)', [0.6]],
-]) rows.push(analyze(label, target, decodeLevels(codec, encode(codec, target, lut, 256, 128, weight), lut)));
+const timed = (label, weight, beam = Infinity) => {
+  const t0 = Date.now();
+  const codes = encode(codec, target, lut, 256, 128, weight, beam);
+  const seconds = (Date.now() - t0) / 1000;
+  rows.push(analyze(label, target, decodeLevels(codec, codes, lut), seconds / (target.length / rate)));
+};
+timed('2-bit code, plain error', []);
+timed('  fixed weight [-0.6]', [-0.6]);
+const adaptive = (gamma, order = 10, floor = 1e-3) => lpcWeights(target, { order, gamma, floor });
+timed('  adaptive tilt (order 1), gamma 0.6', adaptive(0.6, 1), Number(opt.beam));
+timed('  adaptive tilt (order 1), gamma 0.8', adaptive(0.8, 1), Number(opt.beam));
+timed('  adaptive, order 2, gamma 0.7', adaptive(0.7, 2), Number(opt.beam));
+timed('  adaptive, order 2, gamma 0.7, floor 1e-2', adaptive(0.7, 2, 1e-2), Number(opt.beam));
+timed('  adaptive, order 10, gamma 0.5', adaptive(0.5, 10), Number(opt.beam));
 const f = v => v === null ? '   -  ' : v.toFixed(1).padStart(6);
 console.log(`${(maxSamples / rate).toFixed(1)} s at ${rate.toFixed(0)} Hz; dB re full scale\n`);
-console.log('setting'.padEnd(34) + 'noise  A-wtd | quietest quarter: signal noise | loudest: signal noise | idle output');
+console.log('setting'.padEnd(34) + 'noise  A-wtd | unmasked: cells  excess | encode time (x real time)');
 for (const r of rows) {
-  console.log(`${r.label.padEnd(34)}${f(r.noise)}${f(r.aNoise)} |${f(r.quietSig).padStart(24)}${f(r.quietNoise)} |${f(r.loudSig).padStart(21)}${f(r.loudNoise)} | ${r.idleOut === null ? 'no silent frames' : `${f(r.idleOut)} dB in ${(r.idleFrames * 100).toFixed(0)}% of frames`}`);
+  console.log(`${r.label.padEnd(34)}${f(r.noise)}${f(r.aNoise)} |${(r.unmasked.share * 100).toFixed(1).padStart(15)}%${r.unmasked.mean.toFixed(1).padStart(6)} dB | ${r.seconds === null ? '' : r.seconds.toFixed(2)}`);
 }
 console.log('\nnoise by frequency (dB re full scale), then the signal:');
 console.log('setting'.padEnd(34) + ['0-.5k', '.5-1k', '1-2k', '2-3k', '3-4k'].map(s => s.padStart(7)).join(''));

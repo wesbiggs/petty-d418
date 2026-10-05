@@ -190,6 +190,20 @@ sensitive. On the piano: 2-3 kHz noise -31.8 to -34.7 dB, 3-4 kHz -32.5 to -36.6
 there is -12). `-0.8` goes further (3-4 kHz -37.6, 0-0.5 kHz -24.0). The A-weighted total does not change, and the total noise rises
 1.7 dB, so whether it sounds better is for listening to: `--dry --out` writes the result. It does not change what the C64 runs. Off by default.
 
+**Adaptive weights** (`--adapt order:gamma`, e.g. `--adapt 2:0.7`; [bridge/src/noise.js](bridge/src/noise.js)). Instead of one fixed tilt, each 256-sample block
+gets the weight `A(z / gamma)` of its own spectral envelope (LPC), as speech codecs use, so that the noise follows the signal's spectrum and is
+masked by it; gamma 0 is white, 1 follows the envelope exactly. A beam (states more than 0.02 in cost above the best are dropped) keeps the search cheap:
+no loss in quality (noise -21.57 against -21.58 dB without it), and 4 times faster, so the encoder runs at about 0.05 to 0.1 of real time
+even with a 10th-order weight. `scripts/hiss.js` compares settings on a clip. **It is not better than the fixed tilt.** On the piano
+and on piper speech the adaptive weights trace out the same trade-off: the noise in 2-4 kHz falls (for the piano, order 2, gamma 0.7: 3-4 kHz
+-34.6 to -43.3 dB, against -38.6 for `--weight -0.6`) and the noise below 1 kHz rises by the same amount in log terms (0-0.5 kHz -35.8 to -23.7 dB, which
+is only 10 dB under the music there). The A-weighted total stays at -28 to -30 dB for every setting. A first-order adaptive tilt is equivalent to the fixed one.
+This is what a quantizer's noise allows: shaping moves noise around, and the average of its level over frequency, in dB, cannot go below that of white noise
+(the Gerzon-Craven limit). The 4-bit output sets that average at -28 dB, so reducing the noise where it is heard
+means raising it somewhere else, and for a steep spectrum like a piano's the somewhere else is soon not masked either. What lowers it overall is
+fewer or finer steps (the full-byte output, which did not work in VICE), or a higher output rate, which gives the noise more spectrum to spread over,
+or filtering the images above 4 kHz.
+
 ## Probing the machine
 
 `node bridge/src/bridge.js --probe` (with the client running) asks the C64 what it is. The client only measures; the bridge decides

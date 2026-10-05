@@ -19,6 +19,7 @@ import { parseArgs } from 'node:util';
 import { DTAB, OUTTAB, MAX_STREAM_BYTES, MODE, MSG, MessageParser, CPU_HZ, NIDX, SAMPLE_BASE, SAMPLE_BYTES, STREAM_WINDOW, encodeLoad, encodeMode, encodePlay, encodePoke, encodeProbe, encodeRate, encodeStream, encodeUnpack, OP, lineTimer, packNibbles, timerFor } from './protocol.js';
 import { STREAM_CODEC, clientTables, decodeLevels, encodeBlocks, makeCodec, outTable, packCodes } from './codec.js';
 import { describeProbe } from './probe.js';
+import { lpcWeights } from './noise.js';
 import { DEFAULTS, loadAudio, prepare, say, speakWith } from './speech.js';
 import { LUTS, reconstruct, splitQuiet, SHAPES } from './dsp.js';
 import { writeWav } from './wav.js';
@@ -40,6 +41,7 @@ const { values: opt } = parseArgs({
     lines: { type: 'string' },
     stream: { type: 'boolean', default: false },
     weight: { type: 'string' },
+    adapt: { type: 'string' },
     probe: { type: 'boolean', default: false },
     staircase256: { type: 'boolean', default: false },
     regs: { type: 'string' },
@@ -185,6 +187,9 @@ async function playBytes(link, bytes) {
 const codec = makeCodec(STREAM_CODEC);
 // --weight -0.6: where the encoder puts its noise (see encodeBlocks): negative moves it down in frequency, under the bass.
 const errorWeight = (opt.weight ?? '').split(',').filter(Boolean).map(Number);
+// --adapt order:gamma[:floor]: weights that follow the signal's spectrum, block by block (noise.js), e.g. 2:0.7.
+const adapt = opt.adapt ? (([order, gamma, floor]) => ({ order: Number(order), gamma: Number(gamma), ...(floor ? { floor: Number(floor) } : {}) }))(opt.adapt.split(':')) : null;
+if (adapt && !(adapt.order >= 1 && adapt.gamma > 0 && adapt.gamma < 1)) { console.error('[d418] --adapt: order:gamma, like 2:0.7 (order 1 or more, gamma between 0 and 1)'); process.exit(1); }
 if (errorWeight.some(Number.isNaN)) { console.error('[d418] --weight: a list of numbers, like -0.6 or -1,0.3'); process.exit(1); }
 // D418_STALL=bytes:ms makes the bridge stop sending for a while after that many bytes, to test the C64 running dry.
 const stall = process.env.D418_STALL ? { at: Number(process.env.D418_STALL.split(':')[0]), ms: Number(process.env.D418_STALL.split(':')[1]), done: false } : null;
@@ -228,7 +233,7 @@ async function streamSegment(link, target, lut) {
       t.unref();
     }
   }
-  for (const codes of encodeBlocks(codec, target, lut, 256, 128, errorWeight)) {
+  for (const codes of encodeBlocks(codec, target, lut, 256, 128, adapt ? lpcWeights(target, adapt) : errorWeight, adapt ? 0.02 : Infinity)) {
     parts.push(codes);
     if (!link) continue;
     fifo = Buffer.concat([fifo, packCodes(codes, 2)]);

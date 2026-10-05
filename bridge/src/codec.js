@@ -89,7 +89,10 @@ export function decode(codec, codes) {
 // music or speech that masks it, and away from 2-4 kHz where it is most
 // audible; positive a1 does the opposite. Each state remembers the errors of
 // the path that reached it, which is an approximation: the search is no longer exact.
-export function* encodeBlocks(codec, target, lut, block = 256, look = 128, weight = []) {
+// `weight` can also be a function of the position of a block (noise.js lpcWeights)
+// that gives its coefficients, all the same length. `beam`: states whose cost is more than
+// this above the best are dropped at each step, which makes a long weight affordable.
+export function* encodeBlocks(codec, target, lut, block = 256, look = 128, weight = [], beam = Infinity) {
   const { next, states, ncodes, N, shift } = codec;
   const level = new Float64Array(states);
   const levels = accLevels(codec, lut);
@@ -98,25 +101,35 @@ export function* encodeBlocks(codec, target, lut, block = 256, look = 128, weigh
   const back = new Uint16Array((block + look) * states); // per time: previous state * ncodes + code
   let cost = new Float64Array(states), nxt = new Float64Array(states);
   let state = codec.start;
-  const M = weight.length;
+  const weightAt = typeof weight === 'function' ? weight : () => weight;
+  let w = weightAt(0);
+  const M = w.length;
   let hist = new Float64Array(states * M), nhist = new Float64Array(states * M); // each state's last M errors
   let past = new Float64Array(M); // the committed path's last M errors
   for (let pos = 0; pos < T; pos += block) {
     const end = Math.min(T, pos + block + look), n = end - pos;
+    if (pos) w = weightAt(pos);
     cost.fill(Infinity);
     cost[state] = 0;
     for (let m = 0; m < M; m++) hist[state * M + m] = past[m];
     for (let k = 0; k < n; k++) {
       nxt.fill(Infinity);
       const x = target[pos + k], col = k * states;
+      let limit = Infinity;
+      if (beam < Infinity) {
+        let lo = Infinity;
+        for (let s = 0; s < states; s++) if (cost[s] < lo) lo = cost[s];
+        limit = lo + beam;
+      }
       for (let s = 0; s < states; s++) {
         const c0 = cost[s];
-        if (c0 === Infinity) continue;
+        if (c0 === Infinity || c0 > limit) continue;
+        let fb = 0; // the weighted past of this path's error, the same for each code
+        for (let m = 0; m < M; m++) fb += w[m] * hist[s * M + m];
         for (let code = 0; code < ncodes; code++) {
           const ns = next[s * ncodes + code], e = level[ns] - x;
-          let w = e;
-          for (let m = 0; m < M; m++) w += weight[m] * hist[s * M + m];
-          const c = c0 + w * w;
+          const we = e + fb;
+          const c = c0 + we * we;
           if (c < nxt[ns]) {
             nxt[ns] = c;
             back[col + ns] = s * ncodes + code;
@@ -145,10 +158,10 @@ export function* encodeBlocks(codec, target, lut, block = 256, look = 128, weigh
   }
 }
 
-export function encode(codec, target, lut, block = 256, look = 128, weight = []) {
+export function encode(codec, target, lut, block = 256, look = 128, weight = [], beam = Infinity) {
   const codes = new Uint8Array(target.length);
   let at = 0;
-  for (const chunk of encodeBlocks(codec, target, lut, block, look, weight)) { codes.set(chunk, at); at += chunk.length; }
+  for (const chunk of encodeBlocks(codec, target, lut, block, look, weight, beam)) { codes.set(chunk, at); at += chunk.length; }
   return codes;
 }
 
