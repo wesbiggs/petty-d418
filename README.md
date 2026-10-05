@@ -1,5 +1,11 @@
 # PETTY-D418
 
+> **Frozen: not actively maintained.** This was the research prototype for playing speech and music through the C64's
+> SID volume register. The result lives on in [PETTY](https://github.com/wesbiggs/petty), which has `say` and `play`
+> commands, modal playback and sound in all its clients (see its `docs/sound.md`). Use PETTY if you just want sound.
+> This repo stays for the measurements and the tools: calibration, hiss analysis, codec evaluation, phase sweeps.
+> Licensed under Apache-2.0, as PETTY is.
+
 Speech on a Commodore 64, through the SID's master volume register (`$D418`).
 A bridge on a Mac turns text (macOS `say`) or any audio file into 4-bit samples,
 loads them into the C64's RAM over a SwiftLink serial link, and tells the C64 to
