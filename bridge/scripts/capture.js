@@ -21,6 +21,7 @@ const { values: opt } = parseArgs({
     prg: { type: 'string', default: 'build/d418.prg' },
     out: { type: 'string', default: 'build/capture' },
     port: { type: 'string', default: '6464' },
+    model: { type: 'string', default: 'c64c' }, // VICE -model: c64 is the old 6526 CIA, c64c the new 8521
     warp: { type: 'boolean', default: false },
   },
 });
@@ -35,6 +36,7 @@ const exited = new Promise(resolve => bridge.on('exit', resolve));
 await new Promise(r => setTimeout(r, 800));
 
 const vice = spawn('x64sc', [
+  '-model', opt.model,
   '-acia1', '-acia1mode', '1', '-acia1base', '0xDE00', '-acia1irq', '1', '-myaciadev', '0',
   '-rsdev1', `127.0.0.1:${opt.port}`, '+rsdev1ip232', '-rsdev1baud', '38400',
   '-sidmodel', opt.sid, '-soundrecdev', 'wav', '-soundrecarg', recording,

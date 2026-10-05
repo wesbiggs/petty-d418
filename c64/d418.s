@@ -24,6 +24,13 @@ CIA1_TALO   = $DC04
 CIA1_TAHI   = $DC05
 CIA1_ICR    = $DC0D
 CIA1_CRA    = $DC0E
+CIA2_TALO   = $DD04             ; the stream's sample clock (see TICK)
+CIA2_TAHI   = $DD05
+CIA2_TBLO   = $DD06
+CIA2_TBHI   = $DD07
+CIA2_ICR    = $DD0D
+CIA2_CRA    = $DD0E
+CIA2_CRB    = $DD0F
 
 ; KERNAL
 NMIVEC      = $0318
@@ -79,6 +86,7 @@ eof         = $27               ; the byte being played is the last
 under       = $28               ; times the buffer ran dry
 need        = $29               ; bytes to buffer before starting
 streaming   = $2A
+tbprev      = $2C               ; the last count of CIA 2's timer B
 
 ; --- BASIC stub: 10 SYS2061 -------------------------------------------------
 .segment "LOADADDR"
@@ -457,6 +465,15 @@ play:
         sta CIA1_TALO
         lda rate+1
         sta CIA1_TAHI
+        lda #$7F                ; CIA 2 (for the stream) raises no NMIs
+        sta CIA2_ICR
+        lda rate
+        sta CIA2_TALO
+        lda rate+1
+        sta CIA2_TAHI
+        lda #$FF                ; timer B counts down from $FFFF, a step a sample
+        sta CIA2_TBLO
+        sta CIA2_TBHI
 :       lda VIC_RASTER          ; line $F9: below the display, no badline
         cmp #$F9
         bne :-
@@ -468,13 +485,19 @@ play:
         beq :++
 :       dex
         bne :-
+:       lda streaming
+        beq :+
+        lda #%01010001          ; timer B, counting A's underflows; force load, start
+        sta CIA2_CRB
+        lda #%00010001          ; and timer A: this write is the phase of every sample
+        sta CIA2_CRA
+        lda CIA2_TBLO
+        sta tbprev
+        jmp stream
 :       lda #%00010001          ; start, continuous, force load
         sta CIA1_CRA
         lda CIA1_ICR            ; clear the flag
-        lda streaming
-        beq :+
-        jmp stream
-:       lda flags
+        lda flags
         and #MODE_EXPAND
         bne @expanded
 
@@ -537,6 +560,8 @@ play:
 play_done:
         lda #0
         sta SID_VOL
+        sta CIA2_CRA
+        sta CIA2_CRB
         lda #$25                ; KERNAL's 60 Hz timer
         sta CIA1_TALO
         lda #$40
@@ -606,9 +631,17 @@ slide:
 ; Every copy writes the volume first, so the write time does not depend on the
 ; work, and polls the receiver last.
 
+; A stream sample starts when CIA 2's timer B, which counts timer A's underflows,
+; changes. The counter, not CIA 1's interrupt flag: the flag register of the old
+; 6526 loses a flag that sets as it is read, which stalls the stream with the
+; display on (the packed and expanded loops above are only used blanked or
+; with their short, tight polls, where it works).
 .macro TICK
-:       ldx CIA1_ICR            ; the timer's flag
+        ldx tbprev
+:       cpx CIA2_TBLO
         beq :-
+        ldx CIA2_TBLO
+        stx tbprev
         lda outv
         sta SID_VOL
 .endmacro

@@ -156,6 +156,11 @@ The paragraph streamed in 24.27 s: real time. `D418_STALL=1000:300` makes the br
 bytes, to run the buffer dry: the stream completes. The display-on case has not had its phase tuned (`sweep-phase.js`): the lock puts one badline
 in each 4-sample group, and which copy it falls in decides whether a write is late.
 
+**The sample clock is CIA 2.** The stream's tick is a change in CIA 2's timer B, which counts timer A's underflows, not CIA 1's
+interrupt flag. The flag register of the old 6526 (VICE `-model c64`; `capture.js --model c64`) loses a flag that sets as it
+is read, and a locked stream with the display on stalled there; a counter keeps a tick that a late poll would miss.
+The packed and expanded one-shot modes still poll the flag. With the display on, a phrase scores 19.6 dB (old CIA) and 17.1 dB (new).
+
 `scripts/codec-eval.js` compares the code with PCM (SNR and A-weighted SNR against the processed speech,
 a 5-second phrase, the `sid6581` table):
 
